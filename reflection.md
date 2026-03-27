@@ -19,8 +19,19 @@ There would be three classes - Pet, Owner , and Task.
 
 **b. Design changes**
 
-- Did your design change during implementation?
-- If yes, describe at least one change and why you made it.
+Yes, the design changed after reviewing the initial skeleton for missing relationships and logic bottlenecks. The following changes were made:
+
+1. **`Task` gained `pet` and `start_time` fields** — The original `Task` had no link to a `Pet`, making it impossible to know which pet a task belonged to in a multi-pet household. A `start_time` field was also added so `view_plan()` can return a real timed schedule rather than an unordered list.
+
+2. **`DailyPlan` gained a `pet` parameter** — The original `DailyPlan` only held a date and a list of tasks with no ownership context. Adding `pet` makes it clear whose plan is being generated.
+
+3. **`Scheduler` gained a `preferences` parameter** — The original `Scheduler` had no access to `Preferences`, so it could not respect `preferred_time` or `priority_categories` when building a plan. Passing `Preferences` into `__init__` gives the scheduler the context it needs.
+
+4. **`Owner.schedule_task` gained a `plan_date` parameter** — Without a date, the scheduler had no way to route a task to the correct `DailyPlan`.
+
+5. **`Scheduler.handle_conflict` gained a `plan` parameter** — Conflict resolution requires comparing a new task against an existing plan, so the method signature was widened to include the relevant `DailyPlan`.
+
+6. **`Preferences.preferred_time` changed from `str` to a `TimeSlot` enum** — A raw string like `"morning"` is fragile and hard to validate. A `TimeSlot` enum (MORNING, AFTERNOON, EVENING) makes the field safe and self-documenting.
 
 ---
 
