@@ -2,10 +2,20 @@
 
 ## 1. System Design
 
+Three core actions :
+-Schedule a task / preference.
+-cancel a task.
+-view schedule and plan.
+
 **a. Initial design**
 
-- Briefly describe your initial UML design.
-- What classes did you include, and what responsibilities did you assign to each?
+My first design would be the following:
+There would be three classes - Pet, Owner , and Task.
+-The Pet class would have basic attributes like name, age, and breed.
+-The Owner class would have attributes like name attributes like owner Info, Preferences and a pet or list of pets.
+-The Task class would have attributes like name, duration, priority, and Category (Feeding, Walking, Grooming).
+-Daily Plan class : This class would be responsible for generating the daily schedule based on the tasks and preferences of the owner. It would have methods to add tasks, remove tasks, and generate the schedule for the day.
+-Schedular class : This class would be responsible for managing the overall scheduling process. It would have methods to create and manage daily plans, as well as to handle any conflicts or adjustments that may arise.
 
 **b. Design changes**
 

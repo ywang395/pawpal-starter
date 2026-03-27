@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>PawPal+ UML Class Diagram</title>
+  <script type="module">
+    import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
+    mermaid.initialize({ startOnLoad: true, theme: 'default' });
+  </script>
+  <style>
+    body {
+      font-family: sans-serif;
+      background: #f0f4f8;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 2rem;
+    }
+    h1 {
+      color: #2c3e50;
+      margin-bottom: 0.5rem;
+    }
+    p.subtitle {
+      color: #666;
+      margin-bottom: 1.5rem;
+    }
+    .diagram-container {
+      background: white;
+      border-radius: 12px;
+      box-shadow: 0 2px 16px rgba(0,0,0,0.1);
+      padding: 2rem;
+      max-width: 960px;
+      width: 100%;
+    }
+  </style>
+</head>
+<body>
+  <h1>PawPal+ Class Diagram</h1>
+  <p class="subtitle">Initial Design — Pet Care Scheduling App</p>
+  <div class="diagram-container">
+    <div class="mermaid">
+classDiagram
+    class Owner {
+        +String name
+        +String ownerInfo
+        +Preferences preferences
+        +List~Pet~ pets
+        +addPet(pet: Pet)
+        +removePet(pet: Pet)
+        +scheduleTask(task: Task)
+        +cancelTask(task: Task)
+        +viewSchedule() DailyPlan
+    }
+
+    class Pet {
+        +String name
+        +int age
+        +String breed
+    }
+
+    class Task {
+        +String name
+        +int duration
+        +int priority
+        +Category category
+    }
+
+    class DailyPlan {
+        +Date date
+        +List~Task~ tasks
+        +addTask(task: Task)
+        +removeTask(task: Task)
+        +generateSchedule()
+        +viewPlan() List~Task~
+    }
+
+    class Scheduler {
+        +List~DailyPlan~ plans
+        +createDailyPlan(date: Date) DailyPlan
+        +handleConflict(task: Task)
+        +adjustPlan(plan: DailyPlan)
+    }
+
+    class Preferences {
+        +String preferredTime
+        +List~Category~ priorityCategories
+    }
+
+    class Category {
+        &lt;&lt;enumeration&gt;&gt;
+        FEEDING
+        WALKING
+        GROOMING
+    }
+
+    Owner "1" --> "1..*" Pet : owns
+    Owner "1" --> "1" Preferences : has
+    Owner "1" --> "1" Scheduler : uses
+    Scheduler "1" --> "1..*" DailyPlan : manages
+    DailyPlan "1" --> "*" Task : contains
+    Task --> Category : categorized by
+    Preferences --> Category : prioritizes
+    </div>
+  </div>
+</body>
+</html>
