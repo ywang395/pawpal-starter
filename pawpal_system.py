@@ -1,4 +1,4 @@
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
 from datetime import date, timedelta
 from typing import List, Optional
@@ -7,12 +7,6 @@ from typing import List, Optional
 # ---------------------------------------------------------------------------
 # Enums
 # ---------------------------------------------------------------------------
-
-class Category(Enum):
-    FEEDING = "Feeding"
-    WALKING = "Walking"
-    GROOMING = "Grooming"
-
 
 class TimeSlot(Enum):
     MORNING = "morning"
@@ -31,17 +25,25 @@ class Pet:
     breed: str
     owner_name: str = ""   # which customer owns this pet
 
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, Pet):
+            return NotImplemented
+        return self.name == other.name and self.age == other.age and self.breed == other.breed
+
+    def __hash__(self) -> int:
+        return hash((self.name, self.age, self.breed))
+
 
 @dataclass
 class Task:
     name: str
     duration: int                        # minutes
     priority: int                        # higher number = higher priority
-    category: Category
     pet: Optional["Pet"] = None          # which pet this task is for
-    start_time: Optional[str] = None     # e.g. "08:00"
+    start_time: Optional[str] = None     # e.g. "08:00" (computed or user-set)
     completed: bool = False
     recur_days: int = 0  # 0 = one-time; >0 = repeat every N days for that many occurrences
+    user_start_time: Optional[str] = None  # user-specified start time; overrides auto-scheduling
 
     def mark_complete(self) -> None:
         """Mark this task as completed."""
@@ -51,7 +53,6 @@ class Task:
 @dataclass
 class Preferences:
     preferred_time: TimeSlot
-    priority_categories: List[Category] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -68,6 +69,14 @@ TIME_SLOT_START = {
 def _time_to_minutes(time_str: str) -> int:
     h, m = map(int, time_str.split(":"))
     return h * 60 + m
+
+
+def _round_up_to_half_hour(total_minutes: int) -> int:
+    """Round up to the next :00 or :30 boundary."""
+    remainder = total_minutes % 30
+    if remainder == 0:
+        return total_minutes
+    return total_minutes + (30 - remainder)
 
 
 def _add_minutes(time_str: str, minutes: int) -> str:
@@ -96,19 +105,35 @@ class DailyPlan:
             self.tasks.remove(task)
 
     def generate_schedule(self, preferences: Preferences) -> None:
-        """Sort tasks by preferred category and priority, then assign sequential start times.
+        """Schedule tasks avoiding time overlaps.
+        User-pinned tasks (user_start_time set) keep their exact time.
+        Auto tasks are placed at the next free :00/:30 slot that doesn't
+        overlap any pinned or already-placed task.
         Completed tasks are excluded from rescheduling."""
+        for t in self.tasks:
+            if t.completed:
+                t.start_time = None
         pending = [t for t in self.tasks if not t.completed]
-        pending.sort(
-            key=lambda t: (
-                0 if t.category in preferences.priority_categories else 1,
-                -t.priority,
-            )
-        )
-        current_time = TIME_SLOT_START[preferences.preferred_time]
+        pending.sort(key=lambda t: -t.priority)
+
+        def _overlaps_any(start: int, end: int) -> bool:
+            return any(start < w_end and w_start < end for w_start, w_end in placed_windows)
+
+        placed_windows: list = []
+        default_start = _time_to_minutes(TIME_SLOT_START[preferences.preferred_time])
+
         for task in pending:
-            task.start_time = current_time
-            current_time = _add_minutes(current_time, task.duration)
+            # Start from user-requested time if set, otherwise use the running cursor
+            candidate = _round_up_to_half_hour(
+                _time_to_minutes(task.user_start_time) if task.user_start_time is not None else default_start
+            )
+            # Push forward until the slot is free
+            while _overlaps_any(candidate, candidate + task.duration):
+                candidate = _round_up_to_half_hour(candidate + 1)
+            task.start_time = f"{(candidate // 60) % 24:02d}:{candidate % 60:02d}"
+            placed_windows.append((candidate, candidate + task.duration))
+            if task.user_start_time is None:
+                default_start = candidate + task.duration
 
     def view_plan(self, sort_by_time: bool = True) -> List[Task]:
         """Return tasks sorted by start_time (default) or in insertion order."""
@@ -123,7 +148,7 @@ class DailyPlan:
 class Scheduler:
     def __init__(self, preferences: Preferences):
         self.preferences: Preferences = preferences
-        self._plan_index: dict = {}  # (date, pet.name) -> DailyPlan
+        self._plan_index: dict = {}  # (date, pet.name, pet.breed, pet.age) -> DailyPlan
 
     @property
     def plans(self) -> List[DailyPlan]:
@@ -131,14 +156,21 @@ class Scheduler:
 
     @plans.setter
     def plans(self, value: List[DailyPlan]) -> None:
-        self._plan_index = {(p.date, p.pet.name): p for p in value}
+        self._plan_index = {(p.date, p.pet.name, p.pet.breed, p.pet.age): p for p in value}
 
     def create_daily_plan(self, plan_date: date, pet: Pet) -> DailyPlan:
         """Return the existing plan for this date and pet, or create a new one."""
-        key = (plan_date, pet.name)
+        key = (plan_date, pet.name, pet.breed, pet.age)
         if key not in self._plan_index:
             self._plan_index[key] = DailyPlan(plan_date, pet)
         return self._plan_index[key]
+
+    def sort_by_time(self, tasks: List[Task]) -> List[Task]:
+        """Return tasks sorted by start_time in HH:MM format.
+        Tasks without a start_time are placed at the end."""
+        assigned = [t for t in tasks if t.start_time is not None]
+        unassigned = [t for t in tasks if t.start_time is None]
+        return sorted(assigned, key=lambda t: t.start_time) + unassigned
 
     def handle_conflict(self, task: Task, plan: DailyPlan) -> None:
         """Add the task to the plan, rejecting exact duplicates (same name + pet)."""
@@ -204,18 +236,22 @@ class Owner:
                 name=task.name,
                 duration=task.duration,
                 priority=task.priority,
-                category=task.category,
                 pet=task.pet,
                 recur_days=interval_days,
+                user_start_time=task.user_start_time,
             )
             self.schedule_task(copy, day)
 
     def cancel_task(self, task: Task) -> None:
-        """Remove a task from whichever plan contains it and regenerate that plan."""
+        """Remove a task from whichever plan contains it and regenerate that plan.
+        If the plan becomes empty, remove it from the scheduler."""
         for plan in self.scheduler.plans:
             if task in plan.tasks:
                 plan.remove_task(task)
-                self.scheduler.adjust_plan(plan)
+                if plan.tasks:
+                    self.scheduler.adjust_plan(plan)
+                else:
+                    self.scheduler.plans = [p for p in self.scheduler.plans if p is not plan]
                 break
 
     def view_schedule(self) -> Optional[DailyPlan]:
@@ -232,35 +268,29 @@ class Owner:
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    prefs = Preferences(
-        preferred_time=TimeSlot.MORNING,
-        priority_categories=[Category.FEEDING, Category.WALKING],
-    )
+    prefs = Preferences(preferred_time=TimeSlot.MORNING)
     owner = Owner(name="Jordan", owner_info="Busy professional", preferences=prefs)
     pet = owner.add_pet(name="Mochi", age=3, breed="Shiba Inu")
 
-    # Create three tasks with different priorities and categories
     tasks = [
-        Task(name="Morning walk", duration=30, priority=3, category=Category.WALKING, pet=pet),
-        Task(name="Breakfast", duration=15, priority=2, category=Category.FEEDING, pet=pet),
-        Task(name="Brush coat", duration=20, priority=1, category=Category.GROOMING, pet=pet),
+        Task(name="Morning walk", duration=30, priority=3, pet=pet),
+        Task(name="Breakfast",    duration=15, priority=2, pet=pet),
+        Task(name="Brush coat",   duration=20, priority=1, pet=pet),
     ]
 
     today = date.today()
     for t in tasks:
         owner.schedule_task(t, today)
 
-    # View schedule
     plan = owner.view_schedule()
     print(f"Schedule for {pet.name} on {plan.date}:")
     print("-" * 40)
     for t in plan.view_plan():
-        print(f"  {t.start_time}  {t.name} ({t.category.value}, {t.duration} min, priority {t.priority})")
+        print(f"  {t.start_time}  {t.name} ({t.duration} min, priority {t.priority})")
 
-    # Cancel a task and view again
     print(f"\nCancelling '{tasks[2].name}'...")
     owner.cancel_task(tasks[2])
     print(f"\nUpdated schedule:")
     print("-" * 40)
     for t in plan.view_plan():
-        print(f"  {t.start_time}  {t.name} ({t.category.value}, {t.duration} min, priority {t.priority})")
+        print(f"  {t.start_time}  {t.name} ({t.duration} min, priority {t.priority})")

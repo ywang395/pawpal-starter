@@ -1,37 +1,72 @@
 from datetime import date
-from pawpal_system import Owner, Task, Preferences, Category, TimeSlot
+from pawpal_system import Owner, Task, Preferences, TimeSlot
 
 # --- Setup ---
-prefs = Preferences(
-    preferred_time=TimeSlot.MORNING,
-    priority_categories=[Category.FEEDING, Category.WALKING],
-)
-
+prefs = Preferences(preferred_time=TimeSlot.MORNING)
 owner = Owner(name="Jordan", owner_info="Busy professional", preferences=prefs)
 
-# Two pets registered by their owners at the front desk
 mochi = owner.add_pet(name="Mochi", age=3, breed="Shiba Inu")
 boba  = owner.add_pet(name="Boba",  age=5, breed="Golden Retriever")
 
-# At least three tasks assigned to different pets
 today = date.today()
 
-owner.schedule_task(Task(name="Breakfast",      duration=15, priority=3, category=Category.FEEDING,  pet=mochi), today)
-owner.schedule_task(Task(name="Morning walk",   duration=30, priority=2, category=Category.WALKING,  pet=mochi), today)
-owner.schedule_task(Task(name="Brush coat",     duration=20, priority=1, category=Category.GROOMING, pet=mochi), today)
-owner.schedule_task(Task(name="Boba's feeding", duration=10, priority=3, category=Category.FEEDING,  pet=boba),  today)
-owner.schedule_task(Task(name="Boba's walk",    duration=45, priority=2, category=Category.WALKING,  pet=boba),  today)
+# Add tasks OUT OF ORDER (later times first, mixed priorities)
+owner.schedule_task(Task(name="Evening walk",   duration=30, priority=1, pet=mochi, user_start_time="17:00"), today)
+owner.schedule_task(Task(name="Lunch snack",    duration=10, priority=2, pet=mochi, user_start_time="12:30"), today)
+owner.schedule_task(Task(name="Breakfast",      duration=15, priority=3, pet=mochi, user_start_time="07:00"), today)
+owner.schedule_task(Task(name="Boba's walk",    duration=45, priority=2, pet=boba,  user_start_time="08:00"), today)
+owner.schedule_task(Task(name="Boba's feeding", duration=10, priority=3, pet=boba,  user_start_time="07:00"), today)
+owner.schedule_task(Task(name="Boba's grooming",duration=20, priority=1, pet=boba,  user_start_time="15:00"), today)
 
-# --- Print Today's Schedule ---
-print("=" * 45)
-print("         Today's Schedule")
-print("=" * 45)
+# Mark one task complete to test filtering
+mochi_plan = next(p for p in owner.scheduler.plans if p.pet == mochi and p.date == today)
+for t in mochi_plan.tasks:
+    if t.name == "Evening walk":
+        t.mark_complete()
 
+# --- Print sorted by time (all tasks) ---
+print("=" * 50)
+print("  Sorted by Time (all tasks, all pets)")
+print("=" * 50)
 for plan in owner.scheduler.plans:
     if plan.date == today:
+        sorted_tasks = owner.scheduler.sort_by_time(plan.tasks)
         print(f"\n  {plan.pet.name} ({plan.pet.breed})")
-        print("  " + "-" * 35)
-        for task in plan.view_plan():
-            print(f"  {task.start_time}  {task.name:<20} {task.duration} min")
+        print("  " + "-" * 40)
+        for t in sorted_tasks:
+            status = "✓" if t.completed else " "
+            print(f"  [{status}] {t.start_time}  {t.name:<20} {t.duration} min  priority={t.priority}")
+
+# --- Print filtered: pending only ---
+print()
+print("=" * 50)
+print("  Filtered: Pending tasks only")
+print("=" * 50)
+for plan in owner.scheduler.plans:
+    if plan.date == today:
+        pending = [t for t in owner.scheduler.sort_by_time(plan.tasks) if not t.completed]
+        if pending:
+            print(f"\n  {plan.pet.name} ({plan.pet.breed})")
+            print("  " + "-" * 40)
+            for t in pending:
+                print(f"  {t.start_time}  {t.name:<20} {t.duration} min  priority={t.priority}")
+
+# --- Print filtered: completed only ---
+print()
+print("=" * 50)
+print("  Filtered: Completed tasks only")
+print("=" * 50)
+found = False
+for plan in owner.scheduler.plans:
+    if plan.date == today:
+        done = [t for t in owner.scheduler.sort_by_time(plan.tasks) if t.completed]
+        if done:
+            found = True
+            print(f"\n  {plan.pet.name} ({plan.pet.breed})")
+            print("  " + "-" * 40)
+            for t in done:
+                print(f"  {t.start_time}  {t.name:<20} {t.duration} min  priority={t.priority}")
+if not found:
+    print("\n  No completed tasks.")
 
 print()
