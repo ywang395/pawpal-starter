@@ -1,0 +1,93 @@
+{
+  "name": "Jordan",
+  "owner_info": "",
+  "preferences": {
+    "preferred_time": "morning"
+  },
+  "pets": [
+    {
+      "name": "Mochi",
+      "age": 3,
+      "breed": "Shiba Inu",
+      "owner_name": "Jordan"
+    },
+    {
+      "name": "Lucy",
+      "age": 3,
+      "breed": "Shiba Inu",
+      "owner_name": "Jordan"
+    }
+  ],
+  "plans": [
+    {
+      "date": "2026-03-29",
+      "pet": {
+        "name": "Mochi",
+        "age": 3,
+        "breed": "Shiba Inu",
+        "owner_name": "Jordan"
+      },
+      "tasks": [
+        {
+          "name": "Morning walk",
+          "duration": 20,
+          "priority": 3,
+          "pet": {
+            "name": "Mochi",
+            "age": 3,
+            "breed": "Shiba Inu",
+            "owner_name": "Jordan"
+          },
+          "start_time": null,
+          "completed": true,
+          "recur_days": 0,
+          "recur_remaining": 0,
+          "user_start_time": "05:30"
+        }
+      ]
+    },
+    {
+      "date": "2026-03-29",
+      "pet": {
+        "name": "Lucy",
+        "age": 3,
+        "breed": "Shiba Inu",
+        "owner_name": "Jordan"
+      },
+      "tasks": [
+        {
+          "name": "Morning walk",
+          "duration": 30,
+          "priority": 3,
+          "pet": {
+            "name": "Lucy",
+            "age": 3,
+            "breed": "Shiba Inu",
+            "owner_name": "Jordan"
+          },
+          "start_time": null,
+          "completed": true,
+          "recur_days": 0,
+          "recur_remaining": 0,
+          "user_start_time": "05:00"
+        },
+        {
+          "name": "vaccine ",
+          "duration": 30,
+          "priority": 3,
+          "pet": {
+            "name": "Lucy",
+            "age": 3,
+            "breed": "Shiba Inu",
+            "owner_name": "Jordan"
+          },
+          "start_time": null,
+          "completed": true,
+          "recur_days": 0,
+          "recur_remaining": 0,
+          "user_start_time": "04:30"
+        }
+      ]
+    }
+  ]
+}

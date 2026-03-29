@@ -1,6 +1,31 @@
 from datetime import date
 from pawpal_system import Owner, Task, Preferences, TimeSlot
 
+
+def priority_badge(priority: int) -> str:
+    return {3: "🔴 High", 2: "🟡 Medium", 1: "🟢 Low"}.get(priority, str(priority))
+
+
+def status_badge(completed: bool) -> str:
+    return "✅ Done" if completed else "🕒 Pending"
+
+
+def print_task_table(title: str, pet_name: str, breed: str, tasks):
+    print(f"\n  {pet_name} ({breed})")
+    print("  " + "-" * 74)
+    print(f"  {title}")
+    print("  " + "-" * 74)
+    print(f"  {'Time':<8} {'Task':<22} {'Duration':<12} {'Priority':<12} {'Status':<12}")
+    for task in tasks:
+        print(
+            f"  {(task.start_time or '--:--'):<8} "
+            f"{task.name:<22} "
+            f"{(str(task.duration) + ' min'):<12} "
+            f"{priority_badge(task.priority):<12} "
+            f"{status_badge(task.completed):<12}"
+        )
+
+
 # --- Setup ---
 prefs = Preferences(preferred_time=TimeSlot.MORNING)
 owner = Owner(name="Jordan", owner_info="Busy professional", preferences=prefs)
@@ -56,11 +81,7 @@ print("=" * 50)
 for plan in owner.scheduler.plans:
     if plan.date == today:
         sorted_tasks = owner.scheduler.sort_by_time(plan.tasks)
-        print(f"\n  {plan.pet.name} ({plan.pet.breed})")
-        print("  " + "-" * 40)
-        for t in sorted_tasks:
-            status = "✓" if t.completed else " "
-            print(f"  [{status}] {t.start_time}  {t.name:<20} {t.duration} min  priority={t.priority}")
+        print_task_table("All tasks", plan.pet.name, plan.pet.breed, sorted_tasks)
 
 # --- Print filtered: pending only ---
 print()
@@ -71,10 +92,7 @@ for plan in owner.scheduler.plans:
     if plan.date == today:
         pending = [t for t in owner.scheduler.sort_by_time(plan.tasks) if not t.completed]
         if pending:
-            print(f"\n  {plan.pet.name} ({plan.pet.breed})")
-            print("  " + "-" * 40)
-            for t in pending:
-                print(f"  {t.start_time}  {t.name:<20} {t.duration} min  priority={t.priority}")
+            print_task_table("Pending tasks", plan.pet.name, plan.pet.breed, pending)
 
 # --- Print filtered: completed only ---
 print()
@@ -87,10 +105,7 @@ for plan in owner.scheduler.plans:
         done = [t for t in owner.scheduler.sort_by_time(plan.tasks) if t.completed]
         if done:
             found = True
-            print(f"\n  {plan.pet.name} ({plan.pet.breed})")
-            print("  " + "-" * 40)
-            for t in done:
-                print(f"  {t.start_time}  {t.name:<20} {t.duration} min  priority={t.priority}")
+            print_task_table("Completed tasks", plan.pet.name, plan.pet.breed, done)
 if not found:
     print("\n  No completed tasks.")
 

@@ -1,6 +1,8 @@
 from dataclasses import dataclass
 from enum import Enum
 from datetime import date, timedelta
+import json
+from pathlib import Path
 from typing import List, Optional
 
 
@@ -33,6 +35,23 @@ class Pet:
     def __hash__(self) -> int:
         return hash((self.name, self.age, self.breed))
 
+    def to_dict(self) -> dict:
+        return {
+            "name": self.name,
+            "age": self.age,
+            "breed": self.breed,
+            "owner_name": self.owner_name,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "Pet":
+        return cls(
+            name=data["name"],
+            age=int(data["age"]),
+            breed=data["breed"],
+            owner_name=data.get("owner_name", ""),
+        )
+
 
 @dataclass
 class Task:
@@ -50,10 +69,49 @@ class Task:
         """Mark this task as completed."""
         self.completed = True
 
+    def to_dict(self) -> dict:
+        return {
+            "name": self.name,
+            "duration": self.duration,
+            "priority": self.priority,
+            "pet": self.pet.to_dict() if self.pet else None,
+            "start_time": self.start_time,
+            "completed": self.completed,
+            "recur_days": self.recur_days,
+            "recur_remaining": self.recur_remaining,
+            "user_start_time": self.user_start_time,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict, pet_lookup: dict) -> "Task":
+        pet_data = data.get("pet")
+        pet = None
+        if pet_data is not None:
+            pet_key = (pet_data["name"], int(pet_data["age"]), pet_data["breed"])
+            pet = pet_lookup.get(pet_key, Pet.from_dict(pet_data))
+        return cls(
+            name=data["name"],
+            duration=int(data["duration"]),
+            priority=int(data["priority"]),
+            pet=pet,
+            start_time=data.get("start_time"),
+            completed=bool(data.get("completed", False)),
+            recur_days=int(data.get("recur_days", 0)),
+            recur_remaining=int(data.get("recur_remaining", 0)),
+            user_start_time=data.get("user_start_time"),
+        )
+
 
 @dataclass
 class Preferences:
     preferred_time: TimeSlot
+
+    def to_dict(self) -> dict:
+        return {"preferred_time": self.preferred_time.value}
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "Preferences":
+        return cls(preferred_time=TimeSlot(data["preferred_time"]))
 
 
 # ---------------------------------------------------------------------------
@@ -183,6 +241,13 @@ class Scheduler:
         unassigned = [t for t in tasks if t.start_time is None]
         return sorted(assigned, key=lambda t: _time_to_minutes(t.start_time)) + unassigned
 
+    def sort_by_priority_then_time(self, tasks: List[Task]) -> List[Task]:
+        """Sort tasks by higher priority first, then by start_time when available."""
+        return sorted(
+            tasks,
+            key=lambda t: (-t.priority, _time_to_minutes(t.start_time) if t.start_time is not None else 10 ** 9, t.name),
+        )
+
     def handle_conflict(self, task: Task, plan: DailyPlan) -> None:
         """Add the task to the plan."""
         plan.add_task(task)
@@ -205,6 +270,28 @@ class Scheduler:
     def adjust_plan(self, plan: DailyPlan) -> None:
         """Regenerate the schedule for a plan after a task is added or removed."""
         plan.generate_schedule(self.preferences)
+
+    def next_available_slot(
+        self,
+        plan: DailyPlan,
+        duration: int,
+        earliest_time: Optional[str] = None,
+    ) -> str:
+        """Return the next free slot in a plan for the requested duration."""
+        self.adjust_plan(plan)
+        occupied = [
+            (_time_to_minutes(task.start_time), _time_to_minutes(task.start_time) + task.duration)
+            for task in plan.tasks
+            if task.start_time is not None and not task.completed
+        ]
+        candidate = _round_up_to_half_hour(
+            _time_to_minutes(earliest_time)
+            if earliest_time is not None
+            else _time_to_minutes(TIME_SLOT_START[self.preferences.preferred_time])
+        )
+        while any(_intervals_overlap(candidate, candidate + duration, start, end) for start, end in occupied):
+            candidate += 30
+        return f"{(candidate // 60) % 24:02d}:{candidate % 60:02d}"
 
 
 class Owner:
@@ -307,6 +394,86 @@ class Owner:
             if plan.date == today:
                 return plan
         return None
+
+    def get_or_create_plan(self, plan_date: date, pet: Optional[Pet] = None) -> Optional[DailyPlan]:
+        """Return an existing plan or create one using the selected pet or first owner pet."""
+        plan_pet = pet if pet is not None else (self.pets[0] if self.pets else None)
+        if plan_pet is None:
+            return None
+        return self.scheduler.create_daily_plan(plan_date, plan_pet)
+
+    def next_available_slot(
+        self,
+        plan_date: date,
+        duration: int,
+        pet: Optional[Pet] = None,
+        earliest_time: Optional[str] = None,
+    ) -> Optional[str]:
+        """Suggest the next available slot for a given pet/date/duration."""
+        plan = self.get_or_create_plan(plan_date, pet)
+        if plan is None:
+            return None
+        return self.scheduler.next_available_slot(plan, duration, earliest_time=earliest_time)
+
+    def save_to_json(self, path: str = "data.json") -> None:
+        """Persist owner, pets, preferences, and daily plans to JSON."""
+        payload = {
+            "name": self.name,
+            "owner_info": self.owner_info,
+            "preferences": self.preferences.to_dict(),
+            "pets": [pet.to_dict() for pet in self.pets],
+            "plans": [
+                {
+                    "date": plan.date.isoformat(),
+                    "pet": plan.pet.to_dict(),
+                    "tasks": [task.to_dict() for task in plan.tasks],
+                }
+                for plan in self.scheduler.plans
+            ],
+        }
+        Path(path).write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+    @classmethod
+    def load_from_json(cls, path: str = "data.json") -> Optional["Owner"]:
+        """Load an owner and all plans from JSON if the file exists."""
+        file_path = Path(path)
+        if not file_path.exists():
+            return None
+
+        payload = json.loads(file_path.read_text(encoding="utf-8"))
+        preferences = Preferences.from_dict(payload["preferences"])
+        owner = cls(
+            name=payload.get("name", ""),
+            owner_info=payload.get("owner_info", ""),
+            preferences=preferences,
+        )
+
+        pet_lookup = {}
+        for pet_data in payload.get("pets", []):
+            pet = Pet.from_dict(pet_data)
+            pet.owner_name = owner.name
+            owner.pets.append(pet)
+            pet_lookup[(pet.name, pet.age, pet.breed)] = pet
+
+        plans: List[DailyPlan] = []
+        for plan_data in payload.get("plans", []):
+            plan_pet_data = plan_data["pet"]
+            plan_pet_key = (plan_pet_data["name"], int(plan_pet_data["age"]), plan_pet_data["breed"])
+            plan_pet = pet_lookup.get(plan_pet_key, Pet.from_dict(plan_pet_data))
+            if plan_pet_key not in pet_lookup:
+                plan_pet.owner_name = owner.name
+                owner.pets.append(plan_pet)
+                pet_lookup[plan_pet_key] = plan_pet
+
+            plan = DailyPlan(date.fromisoformat(plan_data["date"]), plan_pet)
+            for task_data in plan_data.get("tasks", []):
+                plan.add_task(Task.from_dict(task_data, pet_lookup))
+            plans.append(plan)
+
+        owner.scheduler.plans = plans
+        for plan in owner.scheduler.plans:
+            owner.scheduler.adjust_plan(plan)
+        return owner
 
 
 # ---------------------------------------------------------------------------

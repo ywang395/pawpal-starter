@@ -1,5 +1,7 @@
 import unittest
 from datetime import date, timedelta
+from pathlib import Path
+import tempfile
 from pawpal_system import (
     Owner, Pet, Task, Preferences, DailyPlan, Scheduler,
     TimeSlot, _add_minutes,
@@ -336,6 +338,42 @@ class TestMultiDateScheduling(unittest.TestCase):
         self.assertEqual(len(tomorrow_plan.tasks), 1)
         self.assertEqual(tomorrow_plan.tasks[0].name, "Daily walk")
         self.assertEqual(tomorrow_plan.tasks[0].recur_remaining, 1)
+
+    def test_next_available_slot_skips_existing_window(self):
+        owner = make_owner()
+        pet = make_pet(owner)
+        owner.schedule_task(make_task("Breakfast", pet=pet, duration=30, priority=3), date.today())
+        suggested = owner.next_available_slot(date.today(), duration=20, pet=pet)
+        self.assertEqual(suggested, "07:30")
+
+    def test_save_and_load_json_preserves_owner_pet_and_task_data(self):
+        owner = make_owner(name="Jordan")
+        pet = make_pet(owner)
+        owner.schedule_task(
+            Task(
+                name="Morning walk",
+                duration=30,
+                priority=3,
+                pet=pet,
+                user_start_time="07:00",
+            ),
+            date.today(),
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            data_path = Path(tmpdir) / "data.json"
+            owner.save_to_json(str(data_path))
+            restored = Owner.load_from_json(str(data_path))
+
+        self.assertIsNotNone(restored)
+        self.assertEqual(restored.name, owner.name)
+        self.assertEqual(len(restored.pets), 1)
+        self.assertEqual(restored.pets[0].name, "Mochi")
+        self.assertEqual(len(restored.scheduler.plans), 1)
+        restored_task = restored.scheduler.plans[0].tasks[0]
+        self.assertEqual(restored_task.name, "Morning walk")
+        self.assertEqual(restored_task.priority, 3)
+        self.assertEqual(restored_task.user_start_time, "07:00")
 
 
 # ---------------------------------------------------------------------------

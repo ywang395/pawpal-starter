@@ -5,12 +5,18 @@ from pawpal_system import Owner, Task, Preferences, TimeSlot, _time_to_minutes, 
 
 st.set_page_config(page_title="PawPal+", page_icon="🐾", layout="centered")
 
+DATA_FILE = "data.json"
+
 # ---------------------------------------------------------------------------
 # Session state
 # ---------------------------------------------------------------------------
 if "owner_obj" not in st.session_state:
-    prefs = Preferences(preferred_time=TimeSlot.MORNING)
-    st.session_state["owner_obj"] = Owner(name="Jordan", owner_info="", preferences=prefs)
+    loaded_owner = Owner.load_from_json(DATA_FILE)
+    if loaded_owner is not None:
+        st.session_state["owner_obj"] = loaded_owner
+    else:
+        prefs = Preferences(preferred_time=TimeSlot.MORNING)
+        st.session_state["owner_obj"] = Owner(name="Jordan", owner_info="", preferences=prefs)
 
 if "tasks" not in st.session_state:
     st.session_state.tasks = []
@@ -23,6 +29,9 @@ if "recurring_checkbox" not in st.session_state:
 
 if "booked_slots" not in st.session_state:
     st.session_state.booked_slots = {}  # date_str -> set of "HH:MM" strings
+
+if "owner_data_loaded" not in st.session_state:
+    st.session_state.owner_data_loaded = False
 
 
 # ---------------------------------------------------------------------------
@@ -44,9 +53,10 @@ st.divider()
 # Owner info
 # ---------------------------------------------------------------------------
 st.subheader("Owner Info")
-owner_name = st.text_input("Owner name", value="Jordan")
 owner = st.session_state["owner_obj"]
+owner_name = st.text_input("Owner name", value=owner.name or "Jordan")
 owner.name = owner_name
+owner.save_to_json(DATA_FILE)
 
 # ---------------------------------------------------------------------------
 # Pets  (add multiple)
@@ -73,6 +83,7 @@ with st.form("add_pet_form", clear_on_submit=True):
         )
         if clean_name and not already_exists:
             owner.add_pet(name=clean_name, age=int(new_pet_age), breed=new_pet_breed)
+            owner.save_to_json(DATA_FILE)
             age = int(new_pet_age)
             if age <= 1:
                 st.info(f"Tip: {clean_name} is a puppy/kitten — consider scheduling more frequent feeding and shorter, more frequent walks.")
@@ -87,6 +98,8 @@ if owner.pets:
         with c2:
             if st.button("Remove", key=f"rmpet_{i}"):
                 owner.remove_pet(p)
+                _sync_state_from_owner(owner)
+                owner.save_to_json(DATA_FILE)
                 st.rerun()
 else:
     st.info("No pets added yet.")
@@ -108,16 +121,74 @@ def _find_free_slot(candidate: int, duration: int, placed_windows: list, gid) ->
 
 
 def _check_conflicts(owner, plan_date):
-    """Return a list of warning strings for any overlapping tasks on plan_date."""
+    """Return helpful warning strings for any overlapping tasks on plan_date."""
     warnings = []
     for plan in owner.scheduler.plans:
         if plan.date != plan_date:
             continue
         for a, b in owner.scheduler.detect_conflicts(plan):
+            a_time = a.start_time or a.user_start_time or "unscheduled"
+            b_time = b.start_time or b.user_start_time or "unscheduled"
             warnings.append(
-                f"⚠️ **{a.name}** and **{b.name}** ({plan.pet.name}) overlap on {plan_date}."
+                f"Conflict for **{plan.pet.name}** on **{plan_date}**: "
+                f"**{a.name}** at **{a_time}** overlaps **{b.name}** at **{b_time}**. "
+                f"Try moving one task or shortening its duration."
             )
     return warnings
+
+
+def _priority_label(priority: int) -> str:
+    return {3: "🔴 High", 2: "🟡 Medium", 1: "🟢 Low"}.get(priority, str(priority))
+
+
+def _priority_value(priority) -> int:
+    if isinstance(priority, int):
+        return priority
+    return {"high": 3, "medium": 2, "low": 1}.get(str(priority).lower(), 0)
+
+
+def _task_emoji(task_name: str) -> str:
+    lowered = task_name.lower()
+    if "walk" in lowered:
+        return "🚶"
+    if any(word in lowered for word in ("feed", "breakfast", "lunch", "dinner", "snack")):
+        return "🍽️"
+    if "med" in lowered:
+        return "💊"
+    if any(word in lowered for word in ("groom", "brush", "bath")):
+        return "🛁"
+    return "🐾"
+
+
+def _sync_state_from_owner(owner_obj) -> None:
+    rebuilt_tasks = []
+    rebuilt_booked_slots = defaultdict(set)
+    for plan in owner_obj.scheduler.plans:
+        pet_label = f"{plan.pet.name} ({plan.pet.breed})"
+        for task in plan.tasks:
+            display_time = task.start_time or task.user_start_time
+            rebuilt_tasks.append({
+                "pet": pet_label,
+                "title": task.name,
+                "duration_minutes": task.duration,
+                "priority": {3: "high", 2: "medium", 1: "low"}.get(task.priority, "medium"),
+                "date": str(plan.date),
+                "recurring": task.recur_days > 0 or task.recur_remaining > 0,
+                "recur_days": task.recur_days,
+                "recur_remaining": task.recur_remaining,
+                "start_time": display_time,
+                "completed": task.completed,
+                "group_id": None,
+            })
+            if display_time and not task.completed:
+                rebuilt_booked_slots[str(plan.date)].add(display_time)
+    st.session_state.tasks = rebuilt_tasks
+    st.session_state.booked_slots = dict(rebuilt_booked_slots)
+
+
+if not st.session_state.owner_data_loaded:
+    _sync_state_from_owner(owner)
+    st.session_state.owner_data_loaded = True
 
 
 # ---------------------------------------------------------------------------
@@ -195,6 +266,19 @@ with st.form("add_task_form", clear_on_submit=True):
         duration = st.number_input("Duration (min)", min_value=1, max_value=240, value=20)
     with tc5:
         priority = st.selectbox("Priority", ["high", "medium", "low"])
+
+    preview_label = next((label for label in task_pets if label != "All pets"), None)
+    preview_pet = pet_label_to_obj.get(preview_label) if preview_label else (owner.pets[0] if owner.pets else None)
+    suggested_slot = None
+    if preview_pet is not None:
+        suggested_slot = owner.next_available_slot(
+            task_date,
+            int(duration),
+            pet=preview_pet,
+            earliest_time=task_time,
+        )
+    if suggested_slot:
+        st.caption(f"Next available slot suggestion: **{suggested_slot}**")
 
     add_task = st.form_submit_button("Add task")
 
@@ -279,6 +363,7 @@ if add_task:
                 })
             for msg in _check_conflicts(owner, task_date):
                 st.warning(msg)
+        owner.save_to_json(DATA_FILE)
         st.rerun()
 
 # ---------------------------------------------------------------------------
@@ -402,9 +487,15 @@ if st.session_state.tasks:
         pets_label = ", ".join(m["pet"] for m in members)
         label = f"~~{rep['title']}~~" if completed else rep["title"]
         recur_badge = " 🔁" if rep.get("recurring") else ""
+        priority_badge = _priority_label(_priority_value(rep["priority"]))
+        task_icon = _task_emoji(rep["title"])
+        status_badge = "✅ Done" if completed else "🕒 Pending"
         c1, c2, c3 = st.columns([5, 1, 1])
         with c1:
-            st.write(f"**{pets_label}** | {label}{recur_badge} | {rep['date']} | {rep['duration_minutes']} min | {rep['priority']}")
+            st.write(
+                f"**{pets_label}** | {task_icon} {label}{recur_badge} | {rep['date']} | "
+                f"{rep['duration_minutes']} min | {priority_badge} | {status_badge}"
+            )
         with c2:
             if not completed:
                 if st.button("Done", key=f"done_{row_key}"):
@@ -415,8 +506,11 @@ if st.session_state.tasks:
                                 if task.name == t["title"] and f"{plan.pet.name} ({plan.pet.breed})" == t["pet"] and str(plan.date) == t["date"]:
                                     task.mark_complete()
                         st.session_state.tasks[j]["completed"] = True
+                    for plan in owner.scheduler.plans:
+                        owner.scheduler.adjust_plan(plan)
                     # Spawn next occurrence using the first member (sibling detection handles the rest)
                     _spawn_next_occurrence(owner, st.session_state.tasks[indices[0]])
+                    owner.save_to_json(DATA_FILE)
                     st.rerun()
             else:
                 st.write("✓ Done")
@@ -439,6 +533,7 @@ if st.session_state.tasks:
                     if date_key and slot:
                         st.session_state.booked_slots.get(date_key, set()).discard(slot)
                     st.session_state.tasks.pop(j)
+                owner.save_to_json(DATA_FILE)
                 st.rerun()
 else:
     st.info("No tasks yet. Add one above.")
@@ -478,116 +573,111 @@ if st.session_state.schedule_visible and owner.scheduler.plans:
         st.success(f"📅 {d}")
         all_rows = []
 
-        # Collect all pending tasks across all pets for this date, sorted by priority
-        all_tasks_for_day = []
         for plan in by_date[d]:
-            if sched_filter_pet != "All" and f"{plan.pet.name} ({plan.pet.breed})" != sched_filter_pet:
+            pet_label = f"{plan.pet.name} ({plan.pet.breed})"
+            if sched_filter_pet != "All" and pet_label != sched_filter_pet:
                 continue
-            for task in plan.tasks:
-                if not task.completed:
-                    all_tasks_for_day.append((task, plan.pet))
+            owner.scheduler.adjust_plan(plan)
 
-        # Build group_id lookup: (pet_label, title, date) -> group_id
-        group_lookup = {
-            (t["pet"], t["title"], t["date"]): t.get("group_id")
-            for t in st.session_state.tasks
-        }
+            for conflict_msg in _check_conflicts(owner, plan.date):
+                st.warning(conflict_msg)
 
-        # Attach group_id to each (task, pet) tuple
-        tagged = []
-        for task, pet in all_tasks_for_day:
-            pet_label = f"{pet.name} ({pet.breed})"
-            gid = group_lookup.get((pet_label, task.name, d))
-            tagged.append((task, pet, gid))
+            for task in owner.scheduler.sort_by_time(plan.tasks):
+                if task.user_start_time and task.start_time and task.start_time != task.user_start_time:
+                    st.info(
+                        f"**{task.name}** for **{plan.pet.name}** requested **{task.user_start_time}**, "
+                        f"scheduled at **{task.start_time}** to avoid overlap."
+                    )
 
-        # Sort by user start time
-        tagged.sort(key=lambda x: _time_to_minutes(x[0].user_start_time) if x[0].user_start_time else 0)
+                end_total = _time_to_minutes(task.start_time) + task.duration if task.start_time else 0
+                if task.start_time and end_total >= 24 * 60:
+                    st.warning(f"**{task.name}** for **{plan.pet.name}** runs past midnight.")
 
-        placed_windows = []  # (start, end, group_id)
-        assigned_group_time = {}  # group_id -> already-resolved candidate
-
-        for task, pet, gid in tagged:
-            if gid and gid in assigned_group_time:
-                # Same group — reuse the already-assigned time
-                candidate = assigned_group_time[gid]
-            else:
-                candidate = _time_to_minutes(task.user_start_time) if task.user_start_time else 0
-                original = candidate
-                candidate = _find_free_slot(candidate, task.duration, placed_windows, gid)
-                if candidate != original:
-                    original_str = f"{(original // 60) % 24:02d}:{original % 60:02d}"
-                    moved_str = f"{(candidate // 60) % 24:02d}:{candidate % 60:02d}"
-                    st.warning(f"⚠️ **{task.name}** ({pet.name}) — scheduled time changed from {original_str} to **{moved_str}** due to overlap.")
-                if gid:
-                    assigned_group_time[gid] = candidate
-
-            placed_windows.append((candidate, candidate + task.duration, gid))
-            task.start_time = f"{(candidate // 60) % 24:02d}:{candidate % 60:02d}"
-
-            # Notify if final scheduled time differs from what the user originally requested
-            if task.user_start_time and task.start_time != task.user_start_time:
-                st.info(f"ℹ️ **{task.name}** ({pet.name}) requested at {task.user_start_time}, scheduled at **{task.start_time}**.")
-
-            end_total = candidate + task.duration
-            if end_total >= 24 * 60:
-                st.warning(f"⚠️ '{task.name}' for {pet.name} runs past midnight.")
-            all_rows.append({
-                "Time": task.start_time,
-                "Pet": f"{pet.name} ({pet.breed})",
-                "Task": task.name,
-                "Duration (min)": task.duration,
-                "Priority": task.priority,
-                "_completed": task.completed,
-            })
+                all_rows.append({
+                    "Time": task.start_time or "Unscheduled",
+                    "Pet": pet_label,
+                    "Task": f"{_task_emoji(task.name)} {task.name}",
+                    "Duration (min)": task.duration,
+                    "Priority": _priority_label(task.priority),
+                    "_priority_value": task.priority,
+                    "_completed": task.completed,
+                })
 
         if all_rows:
-            # Apply status filter — by default hide completed tasks
+            total_tasks = len(all_rows)
+
             if sched_filter_status == "Done":
                 all_rows = [r for r in all_rows if r["_completed"]]
-            else:
+            elif sched_filter_status == "Pending":
                 all_rows = [r for r in all_rows if not r["_completed"]]
 
-            # Apply sort
-            if sched_sort == "Time":
-                display_rows = all_rows  # already sorted by sort_by_time()
-            else:
-                display_rows = sorted(all_rows, key=lambda r: -r["Priority"])
+            if not all_rows:
+                st.info("No schedule rows match the current filters for this date.")
+                continue
 
-            # Header row
-            h1, h2, h3, h4, h5, h6 = st.columns([2, 2, 3, 2, 2, 2])
-            h1.markdown("**Time**"); h2.markdown("**Pet**"); h3.markdown("**Task**")
-            h4.markdown("**Duration**"); h5.markdown("**Priority**"); h6.markdown("**Status**")
+            if sched_sort == "Time":
+                display_rows = sorted(
+                    all_rows,
+                    key=lambda r: (_time_to_minutes(r["Time"]) if r["Time"] != "Unscheduled" else 10**9, r["Pet"], r["Task"]),
+                )
+            else:
+                display_rows = sorted(
+                    all_rows,
+                    key=lambda r: (-r["_priority_value"], _time_to_minutes(r["Time"]) if r["Time"] != "Unscheduled" else 10**9, r["Task"]),
+                )
+
+            st.success(
+                f"{len(display_rows)} of {total_tasks} task(s) shown for {d}. "
+                f"Sorted by {sched_sort.lower()}."
+            )
+
+            st.table([
+                {
+                    "Time": row["Time"],
+                    "Pet": row["Pet"],
+                    "Task": row["Task"],
+                    "Duration": f"{row['Duration (min)']} min",
+                    "Priority": row["Priority"],
+                    "Status": "Done" if row["_completed"] else "Pending",
+                }
+                for row in display_rows
+            ])
+
+            st.markdown("**Update task status**")
 
             for row_idx, row in enumerate(display_rows):
                 completed = row["_completed"]
-                c1, c2, c3, c4, c5, c6 = st.columns([2, 2, 3, 2, 2, 2])
-                c1.write(row["Time"])
-                c2.write(row["Pet"])
-                c3.write(f"~~{row['Task']}~~" if completed else row["Task"])
-                c4.write(f"{row['Duration (min)']} min")
-                c5.write(row["Priority"])
+                c1, c2, c3, c4 = st.columns([5, 2, 2, 2])
+                c1.write(f"**{row['Time']}** | {row['Pet']} | {row['Task']}")
+                c2.write(f"{row['Duration (min)']} min")
+                c3.write(row["Priority"])
                 if completed:
-                    c6.write("✓ Done")
+                    c4.write("✓ Done")
                 else:
                     btn_key = f"sched_done_{d}_{row['Pet']}_{row['Task']}_{row_idx}"
-                    if c6.button("Done", key=btn_key):
+                    if c4.button("Done", key=btn_key):
                         for plan in owner.scheduler.plans:
                             for task in plan.tasks:
-                                if (task.name == row["Task"]
+                                normalized_task_name = row["Task"].split(" ", 1)[1] if " " in row["Task"] else row["Task"]
+                                if (task.name == normalized_task_name
                                         and f"{plan.pet.name} ({plan.pet.breed})" == row["Pet"]
                                         and str(plan.date) == d):
                                     task.mark_complete()
+                        for plan in owner.scheduler.plans:
+                            owner.scheduler.adjust_plan(plan)
                         for st_task in st.session_state.tasks:
-                            if (st_task["title"] == row["Task"]
+                            normalized_task_name = row["Task"].split(" ", 1)[1] if " " in row["Task"] else row["Task"]
+                            if (st_task["title"] == normalized_task_name
                                     and st_task["pet"] == row["Pet"]
                                     and st_task["date"] == d):
                                 st_task["completed"] = True
                                 _spawn_next_occurrence(owner, st_task)
+                        owner.save_to_json(DATA_FILE)
                         st.rerun()
 
             with st.expander("Why was this plan generated?"):
                 for row in display_rows:
-                    p = row["Priority"]
+                    p = row["_priority_value"]
                     if p == 3:
                         time_reason = "scheduled first (high priority)"
                     elif p == 2:

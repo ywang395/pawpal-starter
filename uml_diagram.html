@@ -37,70 +37,89 @@
 </head>
 <body>
   <h1>PawPal+ Class Diagram</h1>
-  <p class="subtitle">Initial Design — Pet Care Scheduling App</p>
+  <p class="subtitle">Final Design — Pet Care Scheduling App</p>
   <div class="diagram-container">
     <div class="mermaid">
 classDiagram
+    direction LR
+
     class Owner {
         +String name
-        +String ownerInfo
+        +String owner_info
         +Preferences preferences
         +List~Pet~ pets
-        +addPet(pet: Pet)
-        +removePet(pet: Pet)
-        +scheduleTask(task: Task)
-        +cancelTask(task: Task)
-        +viewSchedule() DailyPlan
+        +Scheduler scheduler
+        +add_pet(name: str, age: int, breed: str) Pet
+        +remove_pet(pet: Pet)
+        +schedule_task(task: Task, plan_date: date)
+        +schedule_recurring(task: Task, start_date: date, occurrences: int, interval_days: int)
+        +cancel_task(task: Task)
+        +complete_task(task: Task)
+        +view_schedule() DailyPlan
     }
 
     class Pet {
         +String name
         +int age
         +String breed
+        +String owner_name
+        +__eq__(other: object) bool
+        +__hash__() int
     }
 
     class Task {
         +String name
         +int duration
         +int priority
-        +Category category
+        +Pet pet
+        +String start_time
+        +bool completed
+        +int recur_days
+        +int recur_remaining
+        +String user_start_time
+        +mark_complete()
     }
 
     class DailyPlan {
-        +Date date
+        +date date
+        +Pet pet
         +List~Task~ tasks
-        +addTask(task: Task)
-        +removeTask(task: Task)
-        +generateSchedule()
-        +viewPlan() List~Task~
+        +add_task(task: Task)
+        +remove_task(task: Task)
+        +generate_schedule(preferences: Preferences)
+        +view_plan(sort_by_time: bool) List~Task~
     }
 
     class Scheduler {
-        +List~DailyPlan~ plans
-        +createDailyPlan(date: Date) DailyPlan
-        +handleConflict(task: Task)
-        +adjustPlan(plan: DailyPlan)
+        +Preferences preferences
+        +dict _plan_index
+        +plans List~DailyPlan~
+        +create_daily_plan(plan_date: date, pet: Pet) DailyPlan
+        +sort_by_time(tasks: List~Task~) List~Task~
+        +handle_conflict(task: Task, plan: DailyPlan)
+        +detect_conflicts(plan: DailyPlan) List~tuple~
+        +adjust_plan(plan: DailyPlan)
     }
 
     class Preferences {
-        +String preferredTime
-        +List~Category~ priorityCategories
+        +TimeSlot preferred_time
     }
 
-    class Category {
+    class TimeSlot {
         &lt;&lt;enumeration&gt;&gt;
-        FEEDING
-        WALKING
-        GROOMING
+        MORNING
+        AFTERNOON
+        EVENING
     }
 
     Owner "1" --> "1..*" Pet : owns
     Owner "1" --> "1" Preferences : has
-    Owner "1" --> "1" Scheduler : uses
+    Owner "1" *-- "1" Scheduler : manages with
     Scheduler "1" --> "1..*" DailyPlan : manages
-    DailyPlan "1" --> "*" Task : contains
-    Task --> Category : categorized by
-    Preferences --> Category : prioritizes
+    DailyPlan "1" --> "1" Pet : for
+    DailyPlan "1" *-- "*" Task : contains
+    Task --> "0..1" Pet : assigned to
+    Preferences --> "1" TimeSlot : stores
     </div>
   </div>
 </body>
