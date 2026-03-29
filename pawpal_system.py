@@ -277,6 +277,29 @@ class Owner:
                     self.scheduler.plans = [p for p in self.scheduler.plans if p is not plan]
                 break
 
+    def complete_task(self, task: Task) -> None:
+        """Mark a task complete and spawn its next recurring occurrence if needed."""
+        for plan in self.scheduler.plans:
+            if task not in plan.tasks:
+                continue
+
+            task.mark_complete()
+            self.scheduler.adjust_plan(plan)
+
+            if task.recur_days > 0 and task.recur_remaining > 0:
+                next_task = Task(
+                    name=task.name,
+                    duration=task.duration,
+                    priority=task.priority,
+                    pet=task.pet,
+                    recur_days=task.recur_days,
+                    recur_remaining=task.recur_remaining - 1,
+                    user_start_time=task.user_start_time,
+                )
+                next_date = plan.date + timedelta(days=task.recur_days)
+                self.schedule_task(next_task, next_date)
+            break
+
     def view_schedule(self) -> Optional[DailyPlan]:
         """Return today's plan, or None if today has no plan (even if past plans exist)."""
         today = date.today()

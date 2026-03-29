@@ -151,20 +151,29 @@ class TestRecurringTasks(unittest.TestCase):
     def test_recurring_creates_correct_number_of_plans(self):
         task = Task(name="Walk", duration=30, priority=2, pet=self.shiba)
         self.owner.schedule_recurring(task, TODAY, occurrences=5, interval_days=1)
-        self.assertEqual(len(self.owner.scheduler.plans), 5)
+        self.assertEqual(len(self.owner.scheduler.plans), 1)
+        plan = self.owner.scheduler.plans[0]
+        self.assertEqual(plan.date, TODAY)
+        self.assertEqual(len(plan.tasks), 1)
 
-    def test_recurring_plans_on_consecutive_dates(self):
+    def test_recurring_completion_spawns_next_day_plan(self):
         task = Task(name="Walk", duration=30, priority=2, pet=self.shiba)
         self.owner.schedule_recurring(task, TODAY, occurrences=3, interval_days=1)
+        first_plan = self.owner.scheduler.plans[0]
+        first_task = first_plan.tasks[0]
+        self.owner.complete_task(first_task)
         plan_dates = sorted(p.date for p in self.owner.scheduler.plans)
-        expected = [TODAY, TODAY + timedelta(days=1), TODAY + timedelta(days=2)]
+        expected = [TODAY, TODAY + timedelta(days=1)]
         self.assertEqual(plan_dates, expected)
 
-    def test_recurring_every_2_days(self):
+    def test_recurring_completion_uses_interval_days_for_next_plan(self):
         task = Task(name="Walk", duration=30, priority=2, pet=self.shiba)
         self.owner.schedule_recurring(task, TODAY, occurrences=3, interval_days=2)
+        first_plan = self.owner.scheduler.plans[0]
+        first_task = first_plan.tasks[0]
+        self.owner.complete_task(first_task)
         plan_dates = sorted(p.date for p in self.owner.scheduler.plans)
-        expected = [TODAY, TODAY + timedelta(days=2), TODAY + timedelta(days=4)]
+        expected = [TODAY, TODAY + timedelta(days=2)]
         self.assertEqual(plan_dates, expected)
 
     def test_recurring_tasks_have_start_times_assigned(self):
@@ -336,6 +345,9 @@ class TestGenerateSchedule(unittest.TestCase):
         self.shiba = self.owner.add_pet(name="Mochi", age=3, breed="Shiba Inu")
         self.pon   = self.owner.add_pet(name="Mochi", age=3, breed="Pon")
 
+    def _plan_for(self, pet):
+        return next(p for p in self.owner.scheduler.plans if p.pet == pet and p.date == TODAY)
+
     def test_generate_assigns_all_start_times(self):
         self.owner.scheduler.preferences = Preferences(preferred_time=TimeSlot.MORNING)
         self.owner.schedule_task(Task(name="Walk",  duration=30, priority=3, pet=self.shiba), TODAY)
@@ -407,6 +419,56 @@ class TestGenerateSchedule(unittest.TestCase):
         self.owner.scheduler.adjust_plan(plan)
         time_second = task.start_time
         self.assertEqual(time_first, time_second)
+
+    def test_generate_rounds_user_start_time_up_to_next_half_hour(self):
+        self.owner.scheduler.preferences = Preferences(preferred_time=TimeSlot.MORNING)
+        task = Task(
+            name="Morning meds",
+            duration=10,
+            priority=2,
+            pet=self.shiba,
+            user_start_time="07:05",
+        )
+        self.owner.schedule_task(task, TODAY)
+        plan = self._plan_for(self.shiba)
+        self.owner.scheduler.adjust_plan(plan)
+        self.assertEqual(task.start_time, "07:30")
+
+    def test_generate_moves_conflicting_pinned_task_forward(self):
+        self.owner.scheduler.preferences = Preferences(preferred_time=TimeSlot.MORNING)
+        breakfast = Task(
+            name="Breakfast",
+            duration=30,
+            priority=3,
+            pet=self.shiba,
+            user_start_time="07:00",
+        )
+        meds = Task(
+            name="Morning meds",
+            duration=15,
+            priority=2,
+            pet=self.shiba,
+            user_start_time="07:00",
+        )
+        self.owner.schedule_task(breakfast, TODAY)
+        self.owner.schedule_task(meds, TODAY)
+        plan = self._plan_for(self.shiba)
+        self.owner.scheduler.adjust_plan(plan)
+        self.assertEqual(breakfast.start_time, "07:00")
+        self.assertEqual(meds.start_time, "07:30")
+        self.assertEqual(self.owner.scheduler.detect_conflicts(plan), [])
+
+    def test_generate_clears_completed_task_start_time(self):
+        self.owner.scheduler.preferences = Preferences(preferred_time=TimeSlot.MORNING)
+        walk = Task(name="Walk", duration=30, priority=3, pet=self.shiba)
+        brush = Task(name="Brush", duration=20, priority=1, pet=self.shiba)
+        self.owner.schedule_task(walk, TODAY)
+        self.owner.schedule_task(brush, TODAY)
+        walk.mark_complete()
+        plan = self._plan_for(self.shiba)
+        self.owner.scheduler.adjust_plan(plan)
+        self.assertIsNone(walk.start_time)
+        self.assertEqual(brush.start_time, "07:00")
 
 
 if __name__ == "__main__":

@@ -216,6 +216,24 @@ class TestSchedulingLogic(unittest.TestCase):
         times = [t.start_time for t in plan.view_plan()]
         self.assertEqual(len(times), len(set(times)))
 
+    def test_view_plan_returns_tasks_in_chronological_order(self):
+        owner = make_owner()
+        pet = make_pet(owner)
+        early = make_task("Breakfast", pet=pet, duration=15, priority=1)
+        late = make_task("Evening walk", pet=pet, duration=30, priority=1)
+        middle = make_task("Lunch", pet=pet, duration=20, priority=1)
+        early.start_time = "07:00"
+        late.start_time = "17:00"
+        middle.start_time = "12:30"
+        plan = DailyPlan(date.today(), pet)
+        plan.add_task(late)
+        plan.add_task(early)
+        plan.add_task(middle)
+        self.assertEqual(
+            [t.name for t in plan.view_plan()],
+            ["Breakfast", "Lunch", "Evening walk"],
+        )
+
     def test_morning_preference_starts_at_0700(self):
         owner = make_owner(preferred_time=TimeSlot.MORNING)
         pet = make_pet(owner)
@@ -300,6 +318,25 @@ class TestMultiDateScheduling(unittest.TestCase):
         self.assertEqual(plan.tasks[0].recur_days, 3)
         self.assertEqual(plan.tasks[0].recur_remaining, 4)
 
+    def test_completing_daily_recurring_task_creates_next_day_task(self):
+        owner = make_owner()
+        pet = make_pet(owner)
+        today = date.today()
+        tomorrow = today + timedelta(days=1)
+        task = make_task("Daily walk", pet=pet, duration=30, priority=2)
+        owner.schedule_recurring(task, today, occurrences=3, interval_days=1)
+
+        today_plan = owner.scheduler.plans[0]
+        first_task = today_plan.tasks[0]
+        owner.complete_task(first_task)
+
+        plan_dates = sorted(p.date for p in owner.scheduler.plans)
+        self.assertEqual(plan_dates, [today, tomorrow])
+        tomorrow_plan = next(p for p in owner.scheduler.plans if p.date == tomorrow)
+        self.assertEqual(len(tomorrow_plan.tasks), 1)
+        self.assertEqual(tomorrow_plan.tasks[0].name, "Daily walk")
+        self.assertEqual(tomorrow_plan.tasks[0].recur_remaining, 1)
+
 
 # ---------------------------------------------------------------------------
 # Scheduler: create_daily_plan and handle_conflict
@@ -344,6 +381,19 @@ class TestScheduler(unittest.TestCase):
         new_task = make_task("Extra task", pet=pet, duration=60)
         owner.schedule_task(new_task, date.today())
         self.assertIsNotNone(task.start_time)
+
+    def test_detect_conflicts_flags_duplicate_start_times(self):
+        owner = make_owner()
+        pet = make_pet(owner)
+        plan = DailyPlan(date.today(), pet)
+        walk = make_task("Walk", pet=pet, duration=30, priority=2)
+        feed = make_task("Feed", pet=pet, duration=15, priority=1)
+        walk.start_time = "07:00"
+        feed.start_time = "07:00"
+        plan.add_task(walk)
+        plan.add_task(feed)
+        conflicts = owner.scheduler.detect_conflicts(plan)
+        self.assertEqual(conflicts, [(walk, feed)])
 
 
 # ---------------------------------------------------------------------------

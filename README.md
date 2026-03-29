@@ -53,3 +53,15 @@ The scheduling engine in `pawpal_system.py` goes beyond a simple task list:
 - **Recurring task support** — `schedule_recurring()` stamps the first occurrence onto the calendar and records the repeat interval (`recur_days`) and remaining count (`recur_remaining`) on the task, ready for a background process to spawn future copies.
 - **Conflict detection** — `Scheduler.detect_conflicts()` scans a plan and returns every overlapping task pair, making it easy to surface scheduling problems in the UI.
 - **Live re-scheduling** — adding or removing a task triggers `adjust_plan()`, which reruns the full schedule so the displayed plan is always consistent.
+
+## Testing PawPal+
+
+Run the automated test suite with:
+
+```bash
+python -m pytest
+```
+
+The tests cover core scheduling behaviors including chronological task ordering, priority-based scheduling, overlap prevention, conflict detection, task completion, deletion and rescheduling, pet and multi-date plan management, and lazy recurring-task behavior where the next occurrence is created after the current one is completed.
+
+**Confidence Level:** 4/5 stars. The current suite passes (`77 passed`) and gives strong coverage of the main scheduling flows and edge cases, though the app would still benefit from deeper UI-level and end-to-end testing for additional confidence.
