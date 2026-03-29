@@ -78,14 +78,14 @@ class TestTaskAddition(unittest.TestCase):
         plan = owner.view_schedule()
         self.assertIn(task, plan.tasks)
 
-    def test_duplicate_task_is_not_added_twice(self):
+    def test_duplicate_task_is_added_twice(self):
         owner = make_owner()
         pet = make_pet(owner)
         task = make_task(pet=pet)
         owner.schedule_task(task, date.today())
         owner.schedule_task(task, date.today())
         plan = owner.view_schedule()
-        self.assertEqual(len(plan.tasks), 1)
+        self.assertEqual(len(plan.tasks), 2)
 
     def test_tasks_for_different_pets_go_into_separate_plans(self):
         owner = make_owner()
@@ -281,6 +281,25 @@ class TestMultiDateScheduling(unittest.TestCase):
         owner = make_owner()
         self.assertIsNone(owner.view_schedule())
 
+    def test_schedule_recurring_creates_only_one_task(self):
+        owner = make_owner()
+        pet = make_pet(owner)
+        task = make_task(pet=pet)
+        owner.schedule_recurring(task, date.today(), occurrences=3, interval_days=1)
+        self.assertEqual(len(owner.scheduler.plans), 1)
+        plan = owner.scheduler.plans[0]
+        self.assertEqual(len(plan.tasks), 1)
+        self.assertEqual(plan.tasks[0].recur_remaining, 2)
+
+    def test_schedule_recurring_first_task_carries_recur_days(self):
+        owner = make_owner()
+        pet = make_pet(owner)
+        task = make_task(pet=pet)
+        owner.schedule_recurring(task, date.today(), occurrences=5, interval_days=3)
+        plan = owner.scheduler.plans[0]
+        self.assertEqual(plan.tasks[0].recur_days, 3)
+        self.assertEqual(plan.tasks[0].recur_remaining, 4)
+
 
 # ---------------------------------------------------------------------------
 # Scheduler: create_daily_plan and handle_conflict
@@ -296,7 +315,7 @@ class TestScheduler(unittest.TestCase):
         plan2 = owner.scheduler.create_daily_plan(today, pet)
         self.assertIs(plan1, plan2)
 
-    def test_handle_conflict_rejects_same_name_and_pet(self):
+    def test_handle_conflict_allows_same_name_and_pet(self):
         owner = make_owner()
         pet = make_pet(owner)
         plan = DailyPlan(date.today(), pet)
@@ -304,7 +323,7 @@ class TestScheduler(unittest.TestCase):
         task2 = make_task("Walk", pet=pet)
         owner.scheduler.handle_conflict(task1, plan)
         owner.scheduler.handle_conflict(task2, plan)
-        self.assertEqual(len(plan.tasks), 1)
+        self.assertEqual(len(plan.tasks), 2)
 
     def test_handle_conflict_allows_same_name_different_pet(self):
         owner = make_owner()

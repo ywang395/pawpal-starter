@@ -44,8 +44,7 @@ Yes, the design changed after reviewing the initial skeleton for missing relatio
 
 **b. Tradeoffs**
 
-- Describe one tradeoff your scheduler makes.
-- Why is that tradeoff reasonable for this scenario?
+One tradeoff I made was scheduling tasks in 30-minute blocks. This simplifies the logic and makes it easier to visualize the schedule, but it also means that tasks that take less than 30 minutes may end up blocking a full half-hour slot, potentially reducing overall efficiency. I chose this approach because it strikes a balance between simplicity and flexibility, and it aligns well with common scheduling practices.
 
 ---
 

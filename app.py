@@ -1,7 +1,7 @@
 import streamlit as st
 from datetime import date, timedelta
 from collections import defaultdict
-from pawpal_system import Owner, Task, Preferences, TimeSlot, _time_to_minutes
+from pawpal_system import Owner, Task, Preferences, TimeSlot, _time_to_minutes, _intervals_overlap
 
 st.set_page_config(page_title="PawPal+", page_icon="🐾", layout="centered")
 
@@ -20,6 +20,9 @@ if "schedule_visible" not in st.session_state:
 
 if "recurring_checkbox" not in st.session_state:
     st.session_state.recurring_checkbox = False
+
+if "booked_slots" not in st.session_state:
+    st.session_state.booked_slots = {}  # date_str -> set of "HH:MM" strings
 
 
 # ---------------------------------------------------------------------------
@@ -91,6 +94,33 @@ else:
 st.divider()
 
 # ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+def _find_free_slot(candidate: int, duration: int, placed_windows: list, gid) -> int:
+    """Advance candidate to the next free 30-min slot, ignoring windows in the same group."""
+    while any(
+        _intervals_overlap(candidate, candidate + duration, w_start, w_end)
+        and not (gid and gid == w_gid)
+        for w_start, w_end, w_gid in placed_windows
+    ):
+        candidate += 30
+    return candidate
+
+
+def _check_conflicts(owner, plan_date):
+    """Return a list of warning strings for any overlapping tasks on plan_date."""
+    warnings = []
+    for plan in owner.scheduler.plans:
+        if plan.date != plan_date:
+            continue
+        for a, b in owner.scheduler.detect_conflicts(plan):
+            warnings.append(
+                f"⚠️ **{a.name}** and **{b.name}** ({plan.pet.name}) overlap on {plan_date}."
+            )
+    return warnings
+
+
+# ---------------------------------------------------------------------------
 # Add task
 # ---------------------------------------------------------------------------
 st.subheader("Tasks")
@@ -98,9 +128,8 @@ st.subheader("Tasks")
 pet_labels = [f"{p.name} ({p.breed})" for p in owner.pets] or ["(add a pet first)"]
 pet_label_to_obj = {f"{p.name} ({p.breed})": p for p in owner.pets}
 
-# Recurring controls live outside the form so the checkbox triggers an immediate
-# rerun and enables the number inputs before the form is submitted.
-rc1, rc2, rc3 = st.columns(3)
+# Date outside the form so the slot dropdown updates live when date changes.
+rc1, rc2, rc3, rc4 = st.columns(4)
 with rc1:
     recurring = st.checkbox("Repeat task", key="recurring_checkbox")
 with rc2:
@@ -111,6 +140,49 @@ with rc3:
     recur_interval = st.number_input("Every N days", min_value=1, max_value=30, value=1,
                                       disabled=not st.session_state.recurring_checkbox,
                                       key="recur_interval")
+with rc4:
+    task_date = st.date_input("Date", value=date.today(), key="task_date_pick")
+
+# Build start-time dropdown from already-submitted tasks on this date.
+# Occupied slots are determined by existing task start_time + duration_minutes.
+# When a task is deleted it's removed from session_state.tasks, freeing its slots automatically.
+all_slots = [f"{h:02d}:{m:02d}" for h in range(24) for m in (0, 30)]
+occupied_windows = [
+    (_time_to_minutes(t["start_time"]), _time_to_minutes(t["start_time"]) + t["duration_minutes"])
+    for t in st.session_state.tasks
+    if t.get("start_time") and t["date"] == str(task_date) and not t.get("completed")
+]
+already_booked = st.session_state.booked_slots.get(str(task_date), set())
+free_slot_values = [
+    s for s in all_slots
+    if s not in already_booked
+    and not any(_intervals_overlap(_time_to_minutes(s), _time_to_minutes(s) + 30, ws, we)
+                for ws, we in occupied_windows)
+]
+
+if "task_time_submitted" not in st.session_state:
+    st.session_state.task_time_submitted = None
+if "task_time_last_submitted" not in st.session_state:
+    st.session_state.task_time_last_submitted = None
+
+PLACEHOLDER = "— Pick a time —"
+
+if not free_slot_values:
+    st.warning("No free slots available on this date.")
+    task_time = None
+    st.selectbox("Start time", [PLACEHOLDER], key="task_time_pick")
+else:
+    last = st.session_state.task_time_last_submitted
+    prev = st.session_state.get("task_time_pick")
+    options = [PLACEHOLDER] + free_slot_values
+    # After submission or on first load, reset to placeholder; otherwise restore selection.
+    if prev and prev in free_slot_values and prev != last:
+        default_index = options.index(prev)
+    else:
+        default_index = 0
+    selected = st.selectbox("Start time", options, index=default_index, key="task_time_pick")
+    task_time = selected if selected != PLACEHOLDER else None
+    st.session_state.task_time_submitted = task_time
 
 with st.form("add_task_form", clear_on_submit=True):
     tc1, tc2 = st.columns(2)
@@ -118,28 +190,47 @@ with st.form("add_task_form", clear_on_submit=True):
         task_pets = st.multiselect("Pet(s)", ["All pets"] + pet_labels)
     with tc2:
         task_title = st.text_input("Task", value="Morning walk")
-    tc4, tc5, tc6 = st.columns(3)
+    tc4, tc5 = st.columns(2)
     with tc4:
         duration = st.number_input("Duration (min)", min_value=1, max_value=240, value=20)
     with tc5:
         priority = st.selectbox("Priority", ["high", "medium", "low"])
-    with tc6:
-        task_date = st.date_input("Date", value=date.today())
-    task_time = st.text_input("Start time (HH:MM)", value="07:00", placeholder="e.g. 08:30")
 
     add_task = st.form_submit_button("Add task")
 
-import re
 if add_task:
-    if not task_pets:
+    task_date = st.session_state.task_date_pick
+    task_time = st.session_state.task_time_submitted or task_time
+    if not task_time:
+        st.error("Please pick a start time.")
+    elif not task_pets:
         st.error("Please select at least one pet.")
-    elif not re.match(r"^\d{2}:\d{2}$", task_time.strip()):
-        st.error("Invalid time format. Please use HH:MM (e.g. 08:30).")
     else:
+        st.session_state.task_time_last_submitted = task_time
+        date_key = str(task_date)
+        if date_key not in st.session_state.booked_slots:
+            st.session_state.booked_slots[date_key] = set()
+        st.session_state.booked_slots[date_key].add(task_time)
         is_recurring = st.session_state.recurring_checkbox
         n_occurrences = st.session_state.recur_count
         n_interval = st.session_state.recur_interval
         prio_int = {"high": 3, "medium": 2, "low": 1}[priority]
+
+        # Clamp duration to available space starting from task_time on this date.
+        task_start_min = _time_to_minutes(task_time)
+        next_conflict_start = min(
+            (ws for ws, we in occupied_windows if ws >= task_start_min),
+            default=24 * 60,
+        )
+        available = next_conflict_start - task_start_min
+        effective_duration = int(duration)
+        if effective_duration > available:
+            effective_duration = max(available, 0)
+            st.warning(
+                f"⚠️ **{task_title}** overlaps an existing task at {task_time}. "
+                f"Duration reduced from {int(duration)} min to **{effective_duration} min** "
+                f"to fit the available slot."
+            )
 
         # Expand "All pets" to every pet label
         selected_labels = pet_labels if "All pets" in task_pets else task_pets
@@ -154,7 +245,7 @@ if add_task:
             pet_obj = pet_label_to_obj[label]
             base_task = Task(
                 name=task_title,
-                duration=int(duration),
+                duration=effective_duration,
                 priority=prio_int,
                 pet=pet_obj,
                 recur_days=int(n_interval) if is_recurring else 0,
@@ -162,30 +253,107 @@ if add_task:
             )
             if is_recurring:
                 owner.schedule_recurring(base_task, task_date, int(n_occurrences), int(n_interval))
-                for i in range(int(n_occurrences)):
-                    recur_day = task_date + timedelta(days=i * int(n_interval))
-                    st.session_state.tasks.append({
-                        "pet": label,
-                        "title": task_title,
-                        "duration_minutes": int(duration),
-                        "priority": priority,
-                        "date": str(recur_day),
-                        "recurring": True,
-                        "start_time": task_time.strip(),
-                        "group_id": group_id,
-                    })
+                st.session_state.tasks.append({
+                    "pet": label,
+                    "title": task_title,
+                    "duration_minutes": effective_duration,
+                    "priority": priority,
+                    "date": str(task_date),
+                    "recurring": True,
+                    "recur_days": int(n_interval),
+                    "recur_remaining": int(n_occurrences) - 1,
+                    "start_time": task_time.strip(),
+                    "group_id": group_id,
+                })
             else:
                 owner.schedule_task(base_task, task_date)
                 st.session_state.tasks.append({
                     "pet": label,
                     "title": task_title,
-                    "duration_minutes": int(duration),
+                    "duration_minutes": effective_duration,
                     "priority": priority,
                     "date": str(task_date),
                     "recurring": False,
                     "start_time": task_time.strip(),
                     "group_id": group_id,
                 })
+            for msg in _check_conflicts(owner, task_date):
+                st.warning(msg)
+        st.rerun()
+
+# ---------------------------------------------------------------------------
+# Helper: spawn the next recurring occurrence when one is marked complete
+# ---------------------------------------------------------------------------
+def _spawn_next_occurrence(owner, st_task):
+    """Spawn the next occurrence of a recurring task.
+
+    If the completed task belonged to a group (multi-pet submission), all
+    siblings in that group share a new group_id so the schedule resolver
+    keeps them at the same time slot.  We only spawn once per group — if a
+    sibling was already spawned in this rerun (detected by the presence of a
+    matching entry for the next date) we skip it.
+    """
+    if not st_task.get("recurring") or st_task.get("recur_remaining", 0) <= 0:
+        return
+
+    next_date = date.fromisoformat(st_task["date"]) + timedelta(days=st_task["recur_days"])
+    next_date_str = str(next_date)
+
+    def _is_already_spawned(title, pet_label, date_str):
+        return any(
+            t["title"] == title and t["pet"] == pet_label and t["date"] == date_str and not t.get("completed")
+            for t in st.session_state.tasks
+        )
+
+    # Avoid double-spawning when this function is called for each sibling in a group
+    if _is_already_spawned(st_task["title"], st_task["pet"], next_date_str):
+        return
+
+    orig_group_id = st_task.get("group_id")
+
+    # Find all completed siblings in the same group (same group_id, same date, same title)
+    if orig_group_id:
+        siblings = [
+            t for t in st.session_state.tasks
+            if t.get("group_id") == orig_group_id
+            and t["title"] == st_task["title"]
+            and t["date"] == st_task["date"]
+            and t.get("completed")
+            and t.get("recur_remaining", 0) > 0
+        ]
+    else:
+        siblings = [st_task]
+
+    import uuid
+    new_group_id = str(uuid.uuid4()) if len(siblings) > 1 else None
+
+    for sibling in siblings:
+        pet_obj = next((p for p in owner.pets if f"{p.name} ({p.breed})" == sibling["pet"]), None)
+        if pet_obj is None:
+            continue
+        new_backend = Task(
+            name=sibling["title"],
+            duration=sibling["duration_minutes"],
+            priority={"high": 3, "medium": 2, "low": 1}[sibling["priority"]],
+            pet=pet_obj,
+            recur_days=sibling["recur_days"],
+            recur_remaining=sibling["recur_remaining"] - 1,
+            user_start_time=sibling["start_time"],
+        )
+        owner.schedule_task(new_backend, next_date)
+        st.session_state.tasks.append({
+            "pet": sibling["pet"],
+            "title": sibling["title"],
+            "duration_minutes": sibling["duration_minutes"],
+            "priority": sibling["priority"],
+            "date": next_date_str,
+            "recurring": True,
+            "recur_days": sibling["recur_days"],
+            "recur_remaining": sibling["recur_remaining"] - 1,
+            "start_time": sibling["start_time"],
+            "group_id": new_group_id,
+        })
+
 
 # Current tasks table with filter + complete + delete
 if st.session_state.tasks:
@@ -197,44 +365,80 @@ if st.session_state.tasks:
     with fc2:
         filter_status = st.selectbox("Filter by status", ["All", "Pending", "Done"], key="filter_status")
 
-    visible_tasks = [
-        (i, t) for i, t in enumerate(st.session_state.tasks)
-        if (filter_pet == "All" or t["pet"] == filter_pet)
-        and (filter_status == "Done" and t.get("completed")
-             or filter_status == "Pending" and not t.get("completed")
-             or filter_status == "All" and not t.get("completed"))
-    ]
+    # Collapse tasks that share a group_id into a single display row.
+    # Solo tasks (group_id=None) each become their own row keyed by their index.
+    seen_groups = set()
+    display_rows = []  # list of (row_key, [indices], representative_task)
+    for i, t in enumerate(st.session_state.tasks):
+        gid = t.get("group_id")
+        if gid:
+            if gid in seen_groups:
+                continue
+            seen_groups.add(gid)
+            indices = [j for j, x in enumerate(st.session_state.tasks) if x.get("group_id") == gid]
+            display_rows.append((f"grp_{gid}", indices, t))
+        else:
+            display_rows.append((f"solo_{i}", [i], t))
 
-    if not visible_tasks:
+    # Apply filters
+    def _row_matches(indices, t):
+        if filter_pet != "All" and not any(st.session_state.tasks[j]["pet"] == filter_pet for j in indices):
+            return False
+        completed = all(st.session_state.tasks[j].get("completed") for j in indices)
+        if filter_status == "Done" and not completed:
+            return False
+        if filter_status in ("All", "Pending") and completed:
+            return False
+        return True
+
+    visible_rows = [(rk, indices, rep) for rk, indices, rep in display_rows if _row_matches(indices, rep)]
+
+    if not visible_rows:
         st.info("No tasks match the current filters.")
 
-    for i, t in visible_tasks:
+    for row_key, indices, rep in visible_rows:
+        members = [st.session_state.tasks[j] for j in indices]
+        completed = all(m.get("completed") for m in members)
+        pets_label = ", ".join(m["pet"] for m in members)
+        label = f"~~{rep['title']}~~" if completed else rep["title"]
+        recur_badge = " 🔁" if rep.get("recurring") else ""
         c1, c2, c3 = st.columns([5, 1, 1])
         with c1:
-            label = f"~~{t['title']}~~" if t.get("completed") else t['title']
-            recur_badge = " 🔁" if t.get("recurring") else ""
-            pet_obj = next((p for p in owner.pets if p.name == t["pet"]), None)
-            pet_label = f"{t['pet']} ({pet_obj.breed})" if pet_obj else t["pet"]
-            st.write(f"**{pet_label}** | {label}{recur_badge} | {t['date']} | {t['duration_minutes']} min | {t['priority']}")
+            st.write(f"**{pets_label}** | {label}{recur_badge} | {rep['date']} | {rep['duration_minutes']} min | {rep['priority']}")
         with c2:
-            if not t.get("completed"):
-                if st.button("Done", key=f"done_{i}"):
-                    for plan in owner.scheduler.plans:
-                        for task in plan.tasks:
-                            if task.name == t["title"] and f"{plan.pet.name} ({plan.pet.breed})" == t["pet"] and str(plan.date) == t["date"]:
-                                task.mark_complete()
-                    st.session_state.tasks[i]["completed"] = True
+            if not completed:
+                if st.button("Done", key=f"done_{row_key}"):
+                    for j in indices:
+                        t = st.session_state.tasks[j]
+                        for plan in owner.scheduler.plans:
+                            for task in plan.tasks:
+                                if task.name == t["title"] and f"{plan.pet.name} ({plan.pet.breed})" == t["pet"] and str(plan.date) == t["date"]:
+                                    task.mark_complete()
+                        st.session_state.tasks[j]["completed"] = True
+                    # Spawn next occurrence using the first member (sibling detection handles the rest)
+                    _spawn_next_occurrence(owner, st.session_state.tasks[indices[0]])
                     st.rerun()
             else:
                 st.write("✓ Done")
         with c3:
-            if st.button("Delete", key=f"del_{i}"):
-                for plan in owner.scheduler.plans:
-                    for task in list(plan.tasks):
-                        pet_label = f"{plan.pet.name} ({plan.pet.breed})"
-                        if task.name == t["title"] and pet_label == t["pet"] and str(plan.date) == t["date"]:
-                            owner.cancel_task(task)
-                st.session_state.tasks.pop(i)
+            if st.button("Delete", key=f"del_{row_key}"):
+                tasks_to_cancel = []
+                for j in indices:
+                    t = st.session_state.tasks[j]
+                    for plan in owner.scheduler.plans:
+                        for task in list(plan.tasks):
+                            pet_label_str = f"{plan.pet.name} ({plan.pet.breed})"
+                            if task.name == t["title"] and pet_label_str == t["pet"] and str(plan.date) == t["date"]:
+                                tasks_to_cancel.append(task)
+                for task in tasks_to_cancel:
+                    owner.cancel_task(task)
+                for j in sorted(indices, reverse=True):
+                    t = st.session_state.tasks[j]
+                    date_key = t.get("date")
+                    slot = t.get("start_time")
+                    if date_key and slot:
+                        st.session_state.booked_slots.get(date_key, set()).discard(slot)
+                    st.session_state.tasks.pop(j)
                 st.rerun()
 else:
     st.info("No tasks yet. Add one above.")
@@ -308,23 +512,21 @@ if st.session_state.schedule_visible and owner.scheduler.plans:
                 candidate = assigned_group_time[gid]
             else:
                 candidate = _time_to_minutes(task.user_start_time) if task.user_start_time else 0
-                # Push forward only past windows from a different group
                 original = candidate
-                while any(
-                    candidate < w_end and w_start < candidate + task.duration
-                    and not (gid and gid == w_gid)
-                    for w_start, w_end, w_gid in placed_windows
-                ):
-                    candidate += 30
+                candidate = _find_free_slot(candidate, task.duration, placed_windows, gid)
                 if candidate != original:
                     original_str = f"{(original // 60) % 24:02d}:{original % 60:02d}"
                     moved_str = f"{(candidate // 60) % 24:02d}:{candidate % 60:02d}"
-                    st.warning(f"⚠️ **{task.name}** ({pet.name}) overlapped at {original_str} — moved to **{moved_str}**.")
+                    st.warning(f"⚠️ **{task.name}** ({pet.name}) — scheduled time changed from {original_str} to **{moved_str}** due to overlap.")
                 if gid:
                     assigned_group_time[gid] = candidate
-                placed_windows.append((candidate, candidate + task.duration, gid))
 
+            placed_windows.append((candidate, candidate + task.duration, gid))
             task.start_time = f"{(candidate // 60) % 24:02d}:{candidate % 60:02d}"
+
+            # Notify if final scheduled time differs from what the user originally requested
+            if task.user_start_time and task.start_time != task.user_start_time:
+                st.info(f"ℹ️ **{task.name}** ({pet.name}) requested at {task.user_start_time}, scheduled at **{task.start_time}**.")
 
             end_total = candidate + task.duration
             if end_total >= 24 * 60:
@@ -380,6 +582,7 @@ if st.session_state.schedule_visible and owner.scheduler.plans:
                                     and st_task["pet"] == row["Pet"]
                                     and st_task["date"] == d):
                                 st_task["completed"] = True
+                                _spawn_next_occurrence(owner, st_task)
                         st.rerun()
 
             with st.expander("Why was this plan generated?"):

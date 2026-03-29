@@ -41,3 +41,15 @@ pip install -r requirements.txt
 5. Add tests to verify key behaviors.
 6. Connect your logic to the Streamlit UI in `app.py`.
 7. Refine UML so it matches what you actually built.
+
+
+## Smarter Scheduling
+
+The scheduling engine in `pawpal_system.py` goes beyond a simple task list:
+
+- **Priority-first ordering** — tasks are sorted by descending priority before slot assignment, so high-priority care (e.g. medication) is always placed first.
+- **Overlap-free placement** — each task is placed at the next free `:00` or `:30` boundary using half-open interval checks, guaranteeing no two tasks share the same time window.
+- **User-pinned start times** — a task can carry a `user_start_time` that anchors it to an exact slot; auto-scheduled tasks flow around pinned ones without displacing them.
+- **Recurring task support** — `schedule_recurring()` stamps the first occurrence onto the calendar and records the repeat interval (`recur_days`) and remaining count (`recur_remaining`) on the task, ready for a background process to spawn future copies.
+- **Conflict detection** — `Scheduler.detect_conflicts()` scans a plan and returns every overlapping task pair, making it easy to surface scheduling problems in the UI.
+- **Live re-scheduling** — adding or removing a task triggers `adjust_plan()`, which reruns the full schedule so the displayed plan is always consistent.

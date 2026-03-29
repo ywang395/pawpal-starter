@@ -14,9 +14,34 @@ today = date.today()
 owner.schedule_task(Task(name="Evening walk",   duration=30, priority=1, pet=mochi, user_start_time="17:00"), today)
 owner.schedule_task(Task(name="Lunch snack",    duration=10, priority=2, pet=mochi, user_start_time="12:30"), today)
 owner.schedule_task(Task(name="Breakfast",      duration=15, priority=3, pet=mochi, user_start_time="07:00"), today)
+# Intentional conflict: "Morning meds" starts at 07:05, overlapping "Breakfast" (07:00–07:15)
+owner.schedule_task(Task(name="Morning meds",   duration=10, priority=2, pet=mochi, user_start_time="07:05"), today)
 owner.schedule_task(Task(name="Boba's walk",    duration=45, priority=2, pet=boba,  user_start_time="08:00"), today)
 owner.schedule_task(Task(name="Boba's feeding", duration=10, priority=3, pet=boba,  user_start_time="07:00"), today)
 owner.schedule_task(Task(name="Boba's grooming",duration=20, priority=1, pet=boba,  user_start_time="15:00"), today)
+
+# --- Conflict detection (based on user-requested times, before auto-resolution) ---
+print("=" * 50)
+print("  Conflict Detection")
+print("=" * 50)
+from pawpal_system import _time_to_minutes
+any_conflicts = False
+for plan in owner.scheduler.plans:
+    if plan.date != today:
+        continue
+    pinned = [t for t in plan.tasks if t.user_start_time]
+    for i, a in enumerate(pinned):
+        a_start = _time_to_minutes(a.user_start_time)
+        for b in pinned[i + 1:]:
+            b_start = _time_to_minutes(b.user_start_time)
+            if a_start < b_start + b.duration and b_start < a_start + a.duration:
+                any_conflicts = True
+                print(f"  WARNING: '{a.name}' requested {a.user_start_time} ({a.duration} min) "
+                      f"overlaps '{b.name}' requested {b.user_start_time} ({b.duration} min) "
+                      f"for {plan.pet.name} — scheduler will resolve automatically.")
+if not any_conflicts:
+    print("  No conflicts detected.")
+print()
 
 # Mark one task complete to test filtering
 mochi_plan = next(p for p in owner.scheduler.plans if p.pet == mochi and p.date == today)

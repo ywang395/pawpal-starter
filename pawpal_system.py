@@ -42,7 +42,8 @@ class Task:
     pet: Optional["Pet"] = None          # which pet this task is for
     start_time: Optional[str] = None     # e.g. "08:00" (computed or user-set)
     completed: bool = False
-    recur_days: int = 0  # 0 = one-time; >0 = repeat every N days for that many occurrences
+    recur_days: int = 0       # interval between occurrences (0 = one-time)
+    recur_remaining: int = 0  # how many future occurrences remain after this one
     user_start_time: Optional[str] = None  # user-specified start time; overrides auto-scheduling
 
     def mark_complete(self) -> None:
@@ -67,6 +68,7 @@ TIME_SLOT_START = {
 
 
 def _time_to_minutes(time_str: str) -> int:
+    """Convert a "HH:MM" string to an integer number of minutes since midnight."""
     h, m = map(int, time_str.split(":"))
     return h * 60 + m
 
@@ -80,9 +82,18 @@ def _round_up_to_half_hour(total_minutes: int) -> int:
 
 
 def _add_minutes(time_str: str, minutes: int) -> str:
+    """Add *minutes* to a "HH:MM" string and return the result as "HH:MM".
+
+    Wraps around midnight (modulo 24 hours).
+    """
     h, m = map(int, time_str.split(":"))
     total = h * 60 + m + minutes
     return f"{(total // 60) % 24:02d}:{total % 60:02d}"
+
+
+def _intervals_overlap(start_a: int, end_a: int, start_b: int, end_b: int) -> bool:
+    """Return True if half-open intervals [start_a, end_a) and [start_b, end_b) overlap."""
+    return start_a < end_b and start_b < end_a
 
 
 # ---------------------------------------------------------------------------
@@ -117,7 +128,7 @@ class DailyPlan:
         pending.sort(key=lambda t: -t.priority)
 
         def _overlaps_any(start: int, end: int) -> bool:
-            return any(start < w_end and w_start < end for w_start, w_end in placed_windows)
+            return any(_intervals_overlap(start, end, w_start, w_end) for w_start, w_end in placed_windows)
 
         placed_windows: list = []
         default_start = _time_to_minutes(TIME_SLOT_START[preferences.preferred_time])
@@ -129,7 +140,7 @@ class DailyPlan:
             )
             # Push forward until the slot is free
             while _overlaps_any(candidate, candidate + task.duration):
-                candidate = _round_up_to_half_hour(candidate + 1)
+                candidate += 30
             task.start_time = f"{(candidate // 60) % 24:02d}:{candidate % 60:02d}"
             placed_windows.append((candidate, candidate + task.duration))
             if task.user_start_time is None:
@@ -170,13 +181,10 @@ class Scheduler:
         Tasks without a start_time are placed at the end."""
         assigned = [t for t in tasks if t.start_time is not None]
         unassigned = [t for t in tasks if t.start_time is None]
-        return sorted(assigned, key=lambda t: t.start_time) + unassigned
+        return sorted(assigned, key=lambda t: _time_to_minutes(t.start_time)) + unassigned
 
     def handle_conflict(self, task: Task, plan: DailyPlan) -> None:
-        """Add the task to the plan, rejecting exact duplicates (same name + pet)."""
-        for existing in plan.tasks:
-            if existing.name == task.name and existing.pet == task.pet:
-                return
+        """Add the task to the plan."""
         plan.add_task(task)
 
     def detect_conflicts(self, plan: DailyPlan) -> List[tuple]:
@@ -190,7 +198,7 @@ class Scheduler:
             for b in assigned[i + 1:]:
                 b_start = _time_to_minutes(b.start_time)
                 b_end = b_start + b.duration
-                if a_start < b_end and b_start < a_end:
+                if _intervals_overlap(a_start, a_end, b_start, b_end):
                     conflicts.append((a, b))
         return conflicts
 
@@ -229,18 +237,33 @@ class Owner:
         self.scheduler.adjust_plan(plan)
 
     def schedule_recurring(self, task: Task, start_date: date, occurrences: int, interval_days: int = 1) -> None:
-        """Schedule copies of task across multiple dates separated by interval_days."""
-        for i in range(occurrences):
-            day = start_date + timedelta(days=i * interval_days)
-            copy = Task(
-                name=task.name,
-                duration=task.duration,
-                priority=task.priority,
-                pet=task.pet,
-                recur_days=interval_days,
-                user_start_time=task.user_start_time,
-            )
-            self.schedule_task(copy, day)
+        """Schedule a recurring task starting on *start_date*.
+
+        Only the first occurrence is placed on the calendar immediately.
+        The ``recur_days`` and ``recur_remaining`` fields on the created task
+        record how often it repeats and how many future occurrences are still
+        pending, so a background process (or the next call) can spawn the
+        remaining copies.
+
+        Args:
+            task: Template task whose name, duration, priority, pet, and
+                optional user_start_time are copied into the first occurrence.
+            start_date: The date on which the first occurrence is scheduled.
+            occurrences: Total number of times the task should occur
+                (including the first one).
+            interval_days: Number of days between consecutive occurrences.
+                Defaults to 1 (daily).
+        """
+        first = Task(
+            name=task.name,
+            duration=task.duration,
+            priority=task.priority,
+            pet=task.pet,
+            recur_days=interval_days,
+            recur_remaining=occurrences - 1,
+            user_start_time=task.user_start_time,
+        )
+        self.schedule_task(first, start_date)
 
     def cancel_task(self, task: Task) -> None:
         """Remove a task from whichever plan contains it and regenerate that plan.
